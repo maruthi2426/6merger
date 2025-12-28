@@ -24,26 +24,26 @@ async def handle_merge_video_upload(update: Update, context: ContextTypes.DEFAUL
         file_info = update.message.video or update.message.document
         file_name = file_info.file_name or f"video_{len(queue.videos) + 1}.mp4"
         
+        for existing_video in queue.videos:
+            if existing_video.file_name.lower() == file_name.lower():
+                await update.message.reply_text(
+                    "⚠️ DUPLICATE FILENAME DETECTED!\n\n"
+                    f"❌ A file named '{file_name}' is already queued.\n\n"
+                    "📝 Solution:\n"
+                    "• Rename the file before uploading\n"
+                    "• Send a different video file\n\n"
+                    f"📂 Current queue: {len(queue.videos)} videos"
+                )
+                file_manager.delete_file(file_path)
+                logger.warning(f"User {user_id} tried to add duplicate filename: {file_name}")
+                return
+        
         # Create metadata
         metadata = VideoMetadata(
             msg_id=update.message.message_id,
             file_name=file_name,
             file_path=file_path
         )
-        
-        for existing_video in queue.videos:
-            if existing_video.file_name.lower() == file_name.lower():
-                await update.message.reply_text(
-                    "⚠️ DUPLICATE FILE NAME DETECTED!\n\n"
-                    f"❌ A file with name '{file_name}' is already in the queue.\n\n"
-                    "📝 Solution:\n"
-                    "• Rename the file before uploading\n"
-                    "• Or send a different file\n\n"
-                    f"📂 Current queue: {len(queue.videos)} videos"
-                )
-                file_manager.delete_file(file_path)
-                logger.warning(f"User {user_id} tried to add duplicate filename: {file_name}")
-                return
         
         # Validate video
         if metadata.duration == 0:
@@ -79,11 +79,10 @@ async def handle_merge_video_upload(update: Update, context: ContextTypes.DEFAUL
         
         # Add to queue
         if queue.add_video(metadata):
-            # Show success with queue status
             await update.message.reply_text(
                 f"✅ Video {len(queue.videos)} added!\n\n"
                 f"📁 File: {file_name}\n"
-                f"⏱ Duration: {VideoMetadata._format_duration(metadata.duration)}\n"
+                f"⏱️ Duration: {VideoMetadata._format_duration(metadata.duration)}\n"
                 f"📊 Size: {metadata.size / (1024*1024):.1f} MB\n"
                 f"🎬 Resolution: {metadata.resolution[0]}x{metadata.resolution[1]}\n\n"
                 f"📂 Queue: {len(queue.videos)} videos\n"

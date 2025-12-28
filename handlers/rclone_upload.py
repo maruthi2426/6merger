@@ -76,16 +76,23 @@ class RCUploadTask(Status):
         
         nstr = mat[0].replace("Transferred:", "").strip().split(",")
         if len(nstr) >= 4:
-            prg = nstr[1].strip("% ").strip()
-            prg_bar = self.progress_bar(prg)
+            progress_str = nstr[1].strip("% ").strip()
+            
+            # Skip if showing incomplete/invalid progress (0/1 or 0%)
+            transferred_str = nstr[0].strip()
+            if "0 / 1" in nstr[0] or (progress_str == "0" and "0 /" in nstr[0]):
+                logger.debug(f"[v0] Skipping invalid progress: {mat[0]}")
+                return None  # Don't display this message
+            
+            prg_bar = self.progress_bar(progress_str)
             
             progress = (
                 f"☁️ <b>UPLOADING TO CLOUD</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"📤 <b>Upload Progress</b>\n"
-                f"{prg_bar} <b>{prg}%</b>\n\n"
+                f"{prg_bar} <b>{progress_str}%</b>\n\n"
                 f"📊 <b>Transfer Details</b>\n"
-                f"✓ Uploaded: <code>{nstr[0].strip()}</code>\n"
+                f"✓ Uploaded: <code>{transferred_str}</code>\n"
                 f"⚡ Speed: <code>{nstr[2].strip()}</code>\n"
                 f"⏱️  ETA: <code>{nstr[3].replace('ETA', '').strip()}</code>\n\n"
                 f"🔧 <b>Engine:</b> <code>RCLONE</code>"
@@ -125,6 +132,10 @@ class RCUploadTask(Status):
             return
         
         progress = await self.create_message()
+        
+        if progress is None:
+            return
+        
         if not self._prev_cont == progress:
             self._prev_cont = progress
             try:
