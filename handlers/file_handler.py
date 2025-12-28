@@ -17,24 +17,42 @@ logger = logging.getLogger(__name__)
 file_manager = FileManager()
 processor = FFmpegProcessor()
 
-async def download_file_with_fallback(context: ContextTypes.DEFAULT_TYPE, file, filepath: str, user_id: int) -> bool:
+async def download_file_with_fallback(context: ContextTypes.DEFAULT_TYPE, file, filepath: str, user_id: int, update: Update = None) -> bool:
     """
-    Download file with fallback to Pyrogram for large files.
-    Bot API getFile has 20MB limit, so use Pyrogram for larger files.
+    Download file with intelligent fallback to Pyrogram for large files.
     
-    Returns True if download successful, False otherwise.
+    Bot API getFile has 50MB hard limit enforced by Telegram servers.
+    For files > 50MB, automatically switch to Pyrogram MTProto protocol.
+    
+    Args:
+        context: Telegram context
+        file: File object from update.message
+        filepath: Local path to save file
+        user_id: User ID
+        update: Update object (required for large files to get chat_id/message_id)
+    
+    Returns:
+        True if download successful, False otherwise
     """
     try:
-        # First try Bot API (for files < 20MB)
-        file_obj = await context.bot.get_file(file.file_id)
-        await file_obj.download_to_drive(filepath)
-        logger.info(f"Downloaded file using Bot API: {filepath}")
-        return True
-    
-    except Exception as bot_api_error:
-        error_msg = str(bot_api_error)
-        if "too big" in error_msg.lower() or "400" in error_msg or "413" in error_msg:
-            logger.warning(f"Bot API failed (file too large), trying Pyrogram: {error_msg}")
+        BOT_API_LIMIT = 50 * 1024 * 1024  # 50MB hard limit
+        file_size = getattr(file, "file_size", 0)
+        
+        # If file is within Bot API limit, use it (faster)
+        if file_size > 0 and file_size <= BOT_API_LIMIT:
+            logger.info(f"File size: {file_size / (1024*1024):.2f}MB - Using Bot API")
+            file_obj = await context.bot.get_file(file.file_id)
+            await file_obj.download_to_drive(filepath)
+            logger.info(f"Downloaded file using Bot API: {filepath}")
+            return True
+        
+        # If file exceeds Bot API limit, skip directly to Pyrogram
+        if file_size > BOT_API_LIMIT:
+            logger.warning(f"File size: {file_size / (1024*1024):.2f}MB exceeds 50MB Bot API limit - Using Pyrogram MTProto")
+            
+            if not update:
+                logger.error("Update object required for large file download")
+                return False
             
             try:
                 from handlers.pyrogram_setup import get_or_create_pyrogram_client
@@ -44,23 +62,67 @@ async def download_file_with_fallback(context: ContextTypes.DEFAULT_TYPE, file, 
                 if not pyrogram_client:
                     raise Exception("Failed to initialize Pyrogram client")
                 
-                # Download using Pyrogram MTProto (supports up to 2GB)
+                # Pyrogram MTProto needs message_id and chat_id, not bot file_id
                 await pyrogram_client.start()
-                downloaded_path = await pyrogram_client.download_media(file.file_id, file_path=filepath)
-                await pyrogram_client.stop()
                 
-                if downloaded_path:
-                    logger.info(f"Downloaded large file using Pyrogram: {downloaded_path}")
-                    return True
-                else:
-                    raise Exception("Pyrogram download failed")
+                chat_id = update.effective_chat.id
+                message_id = update.message.message_id
+                
+                # Download using Pyrogram MTProto (supports up to 2GB)
+                msg = await pyrogram_client.get_messages(chat_id, message_id)
+                
+                if msg and msg.document or msg.video or msg.audio:
+                    downloaded_path = await msg.download(file_name=filepath)
+                    
+                    if downloaded_path and os.path.exists(filepath):
+                        await pyrogram_client.stop()
+                        logger.info(f"Downloaded large file using Pyrogram: {filepath}")
+                        return True
+                
+                await pyrogram_client.stop()
+                raise Exception("Pyrogram download returned no file")
             
             except Exception as pyrogram_error:
                 logger.error(f"Pyrogram fallback failed: {pyrogram_error}")
-                raise Exception(f"Failed to download file: {pyrogram_error}")
-        else:
-            # Re-raise if it's a different error
-            raise bot_api_error
+                return False
+        
+        # If file size is 0 (unknown), try Bot API with exception handling
+        logger.info(f"File size unknown (0 bytes reported) - attempting Bot API")
+        file_obj = await context.bot.get_file(file.file_id)
+        await file_obj.download_to_drive(filepath)
+        logger.info(f"Downloaded file using Bot API: {filepath}")
+        return True
+    
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Download failed: {error_msg}")
+        
+        # If Bot API failed with size error, try Pyrogram as last resort
+        if ("too big" in error_msg.lower() or "413" in error_msg or "400" in error_msg) and update:
+            logger.warning(f"Bot API failed with error: {error_msg} - attempting Pyrogram fallback")
+            try:
+                from handlers.pyrogram_setup import get_or_create_pyrogram_client
+                
+                pyrogram_client = await get_or_create_pyrogram_client(str(user_id))
+                await pyrogram_client.start()
+                
+                chat_id = update.effective_chat.id
+                message_id = update.message.message_id
+                
+                msg = await pyrogram_client.get_messages(chat_id, message_id)
+                if msg:
+                    downloaded_path = await msg.download(file_name=filepath)
+                    await pyrogram_client.stop()
+                    
+                    if downloaded_path and os.path.exists(filepath):
+                        logger.info(f"Fallback: Downloaded large file using Pyrogram: {filepath}")
+                        return True
+                
+                await pyrogram_client.stop()
+            except Exception as fallback_error:
+                logger.error(f"Fallback also failed: {fallback_error}")
+        
+        return False
 
 async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle all file uploads and process based on operation."""
@@ -93,7 +155,7 @@ async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # Save the config file
             conf_path = os.path.join(user_dir, "rclone.conf")
             
-            success = await download_file_with_fallback(context, file, conf_path, user_id)
+            success = await download_file_with_fallback(context, file, conf_path, user_id, update)
             if not success:
                 await update.message.reply_text(
                     "❌ Failed to download rclone.conf file",
@@ -219,7 +281,7 @@ async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 reply_to_message_id=update.message.message_id
             )
             
-            success = await download_file_with_fallback(context, file, filepath, user_id)
+            success = await download_file_with_fallback(context, file, filepath, user_id, update)
             try:
                 await download_msg.delete()
             except:
@@ -234,7 +296,7 @@ async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
             await process_merge_video(update, context, filepath)
         else:
-            success = await download_file_with_fallback(context, file, filepath, user_id)
+            success = await download_file_with_fallback(context, file, filepath, user_id, update)
             if not success:
                 await update.message.reply_text(
                     "❌ Failed to download file. Please try again.",
