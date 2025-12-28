@@ -74,7 +74,7 @@ async def handle_merge_video_upload(update: Update, context: ContextTypes.DEFAUL
                     f"📂 Current queue: {len(queue.videos)} videos"
                 )
                 file_manager.delete_file(file_path)
-                logger.warning(f"User {user_id} tried to add duplicate file: {file_name}")
+                logger.warning(f"User {user_id} tried to add duplicate file_id: {file_name}")
                 return
         
         # Add to queue

@@ -37,7 +37,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info(f"User {update.effective_user.id} closed menu")
         except Exception as e:
             logger.error(f"Error deleting message: {e}")
-            await query.edit_message_text(text="✅ Menu closed. Type /start to open again.")
+            try:
+                await query.edit_message_text(text="✅ Menu closed. Type /start to open again.")
+            except:
+                pass
         return
     
     if callback_data.startswith("merge_") or callback_data == "video_merge":
@@ -61,28 +64,36 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     
     # MAIN MENU NAVIGATION
     if callback_data == "back_main":
-        await query.edit_message_text(
+        await safe_edit(
+            update,
+            context,
             text="🎬 Welcome to Video Merger Bot!\n\nSelect a category:",
             reply_markup=get_main_keyboard(context.user_data.get("upload_mode")),
         )
         logger.info(f"User {update.effective_user.id} returned to main menu")
     
     elif callback_data == "menu_video_tools":
-        await query.edit_message_text(
+        await safe_edit(
+            update,
+            context,
             text="🎬 VIDEO TOOLS\n━━━━━━━━━━━━━━━━━━\nSelect an operation:",
             reply_markup=get_video_tools_keyboard(),
         )
         logger.info(f"User {update.effective_user.id} opened Video Tools menu")
     
     elif callback_data == "menu_audio_tools":
-        await query.edit_message_text(
+        await safe_edit(
+            update,
+            context,
             text="🎵 AUDIO TOOLS\n━━━━━━━━━━━━━━━━━━\nSelect an operation:",
             reply_markup=get_audio_tools_keyboard(),
         )
         logger.info(f"User {update.effective_user.id} opened Audio Tools menu")
     
     elif callback_data == "menu_upload_mode":
-        await query.edit_message_text(
+        await safe_edit(
+            update,
+            context,
             text="📤 UPLOAD MODE\n━━━━━━━━━━━━━━━━━━\nSelect your preferred upload method:",
             reply_markup=get_upload_mode_keyboard(context.user_data.get("upload_mode")),
         )
@@ -386,3 +397,21 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     
     else:
         logger.warning(f"Unknown callback: {callback_data}")
+
+async def safe_edit(update, context, text, reply_markup=None):
+    """Safely edit message only if content actually changed."""
+    query = update.callback_query
+    try:
+        # Get current message text
+        current_text = query.message.text if query.message else ""
+        
+        # Only edit if content is different
+        if current_text != text:
+            await query.edit_message_text(text=text, reply_markup=reply_markup)
+        elif reply_markup and query.message:
+            # Text is same but markup might be different
+            current_markup = query.message.reply_markup
+            if str(current_markup) != str(reply_markup):
+                await query.edit_message_text(text=text, reply_markup=reply_markup)
+    except Exception as e:
+        logger.warning(f"Safe edit failed: {e}")
