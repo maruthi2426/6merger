@@ -17,6 +17,51 @@ logger = logging.getLogger(__name__)
 file_manager = FileManager()
 processor = FFmpegProcessor()
 
+async def download_file_with_fallback(context: ContextTypes.DEFAULT_TYPE, file, filepath: str, user_id: int) -> bool:
+    """
+    Download file with fallback to Pyrogram for large files.
+    Bot API getFile has 20MB limit, so use Pyrogram for larger files.
+    
+    Returns True if download successful, False otherwise.
+    """
+    try:
+        # First try Bot API (for files < 20MB)
+        file_obj = await context.bot.get_file(file.file_id)
+        await file_obj.download_to_drive(filepath)
+        logger.info(f"Downloaded file using Bot API: {filepath}")
+        return True
+    
+    except Exception as bot_api_error:
+        error_msg = str(bot_api_error)
+        if "too big" in error_msg.lower() or "400" in error_msg or "413" in error_msg:
+            logger.warning(f"Bot API failed (file too large), trying Pyrogram: {error_msg}")
+            
+            try:
+                from handlers.pyrogram_setup import get_or_create_pyrogram_client
+                
+                # Get Pyrogram client for large file download
+                pyrogram_client = await get_or_create_pyrogram_client(str(user_id))
+                if not pyrogram_client:
+                    raise Exception("Failed to initialize Pyrogram client")
+                
+                # Download using Pyrogram MTProto (supports up to 2GB)
+                await pyrogram_client.start()
+                downloaded_path = await pyrogram_client.download_media(file.file_id, file_path=filepath)
+                await pyrogram_client.stop()
+                
+                if downloaded_path:
+                    logger.info(f"Downloaded large file using Pyrogram: {downloaded_path}")
+                    return True
+                else:
+                    raise Exception("Pyrogram download failed")
+            
+            except Exception as pyrogram_error:
+                logger.error(f"Pyrogram fallback failed: {pyrogram_error}")
+                raise Exception(f"Failed to download file: {pyrogram_error}")
+        else:
+            # Re-raise if it's a different error
+            raise bot_api_error
+
 async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle all file uploads and process based on operation."""
     try:
@@ -47,8 +92,14 @@ async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
             # Save the config file
             conf_path = os.path.join(user_dir, "rclone.conf")
-            file_obj = await context.bot.get_file(file.file_id)
-            await file_obj.download_to_drive(conf_path)
+            
+            success = await download_file_with_fallback(context, file, conf_path, user_id)
+            if not success:
+                await update.message.reply_text(
+                    "❌ Failed to download rclone.conf file",
+                    reply_to_message_id=update.message.message_id
+                )
+                return
             
             # Validate rclone config
             try:
@@ -155,7 +206,6 @@ async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not file:
             return
         
-        file_obj = await context.bot.get_file(file.file_id)
         filename = file.file_name or f"file_{file.file_id[:8]}"
         filepath = os.path.join(file_manager.TEMP_FOLDER, filename)
         
@@ -169,17 +219,29 @@ async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 reply_to_message_id=update.message.message_id
             )
             
-            await file_obj.download_to_drive(filepath)
-            file_size = file_manager.get_file_size(filepath) / (1024*1024)
-            
+            success = await download_file_with_fallback(context, file, filepath, user_id)
             try:
                 await download_msg.delete()
             except:
                 pass
             
+            if not success:
+                await update.message.reply_text(
+                    "❌ Failed to download video file. Please try again.",
+                    reply_to_message_id=update.message.message_id
+                )
+                return
+            
             await process_merge_video(update, context, filepath)
         else:
-            await file_obj.download_to_drive(filepath)
+            success = await download_file_with_fallback(context, file, filepath, user_id)
+            if not success:
+                await update.message.reply_text(
+                    "❌ Failed to download file. Please try again.",
+                    reply_to_message_id=update.message.message_id
+                )
+                return
+            
             file_size = file_manager.get_file_size(filepath) / (1024*1024)
             await update.message.reply_text(
                 f"📥 Downloaded: {filename} ({file_size:.2f} MB)",
