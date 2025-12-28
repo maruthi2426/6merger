@@ -66,7 +66,10 @@ class RCUploadTask(Status):
         self._upmsg = msg
 
     async def create_message(self):
-        """Create formatted progress message from rclone output."""
+        """
+        Create beautifully formatted progress message from rclone output.
+        Displays: file size uploaded, progress %, visual progress bar, upload speed, ETA
+        """
         mat = re.findall(r"Transferred:.*ETA.*", self._upmsg)
         if not mat:
             return self._upmsg
@@ -75,21 +78,29 @@ class RCUploadTask(Status):
         if len(nstr) >= 4:
             prg = nstr[1].strip("% ").strip()
             prg_bar = self.progress_bar(prg)
+            
             progress = (
-                f"<b>Uploaded: {nstr[0]}\n"
-                f"Progress: {prg_bar} - {prg}%\n"
-                f"Speed: {nstr[2]}\n"
-                f"ETA: {nstr[3].replace('ETA', '').strip()}</b>\n\n"
-                f"<b>Using Engine: </b><code>RCLONE</code>"
+                f"☁️ <b>UPLOADING TO CLOUD</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📤 <b>Upload Progress</b>\n"
+                f"{prg_bar} <b>{prg}%</b>\n\n"
+                f"📊 <b>Transfer Details</b>\n"
+                f"✓ Uploaded: <code>{nstr[0].strip()}</code>\n"
+                f"⚡ Speed: <code>{nstr[2].strip()}</code>\n"
+                f"⏱️  ETA: <code>{nstr[3].replace('ETA', '').strip()}</code>\n\n"
+                f"🔧 <b>Engine:</b> <code>RCLONE</code>"
             )
             return progress
         return self._upmsg
 
     @staticmethod
     def progress_bar(percentage):
-        """Create visual progress bar."""
-        comp = "●"
-        ncomp = "○"
+        """
+        Create visual progress bar with better styling.
+        Uses filled and empty blocks for clear visualization.
+        """
+        filled = "█"
+        empty = "░"
         pr = ""
         
         try:
@@ -97,11 +108,15 @@ class RCUploadTask(Status):
         except:
             percentage = 0
         
-        for i in range(1, 11):
-            if i <= int(percentage / 10):
-                pr += comp
+        # Create 20-character progress bar
+        filled_count = int(percentage / 5)  # 20 blocks total
+        
+        for i in range(20):
+            if i < filled_count:
+                pr += filled
             else:
-                pr += ncomp
+                pr += empty
+        
         return pr
 
     async def update_message(self):
@@ -113,7 +128,7 @@ class RCUploadTask(Status):
         if not self._prev_cont == progress:
             self._prev_cont = progress
             try:
-                await self._message.edit_text(progress)
+                await self._message.edit_text(progress, parse_mode="HTML")
             except Exception as e:
                 logger.debug(f"Could not update message: {e}")
 
@@ -203,11 +218,13 @@ async def rclone_driver(status_msg, user_id: int, filepath: str, filename: str =
         
         try:
             await status_msg.edit_text(
-                f"☁️ UPLOADING TO RCLONE\n━━━━━━━━━━━━━━━━━━\n\n"
-                f"📁 Remote: {drive_name}\n"
-                f"📄 File: {upload_filename}\n"
-                f"📊 Size: {file_size_mb:.2f}MB\n\n"
-                f"⏳ Uploading... 0%"
+                f"☁️ <b>UPLOADING TO CLOUD</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"📁 <b>Remote Drive:</b> <code>{drive_name}</code>\n"
+                f"📄 <b>File:</b> <code>{upload_filename}</code>\n"
+                f"📊 <b>Size:</b> <code>{file_size_mb:.2f}MB</code>\n\n"
+                f"⏳ <b>Status:</b> Initializing upload...",
+                parse_mode="HTML"
             )
         except:
             pass
@@ -311,11 +328,11 @@ async def rclone_upload(filepath: str, drive_name: str, conf_path: str, task: RC
 
 
 async def rclone_process_display(process, status_msg: any, task: RCUploadTask):
-    """Monitor and display rclone upload progress."""
+    """Monitor and display rclone upload progress in real-time."""
     try:
         blank = 0
         start = time.time()
-        edit_time = 5
+        edit_time = 2  # Update every 2 seconds for smoother experience
         
         while True:
             try:

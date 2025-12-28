@@ -96,6 +96,36 @@ async def process_merge_video(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["operation"] = None
 
 
+async def _generate_video_thumbnail(video_path: str) -> str:
+    """
+    Generate thumbnail from merged video.
+    Extract first frame at 1 second mark as thumbnail.
+    """
+    try:
+        thumb_path = video_path.replace('.mp4', '_thumb.jpg')
+        cmd = [
+            "ffmpeg",
+            "-i", video_path,
+            "-ss", "1",  # 1 second into video
+            "-vf", "scale=320:180",
+            "-vframes", "1",
+            "-y",
+            thumb_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        
+        if result.returncode == 0 and os.path.exists(thumb_path):
+            logger.info(f"Generated thumbnail: {thumb_path}")
+            return thumb_path
+        else:
+            logger.warning(f"Could not generate thumbnail")
+            return None
+    except Exception as e:
+        logger.warning(f"Thumbnail generation error: {e}")
+        return None
+
+
 async def execute_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Execute actual merge using FFmpeg concat (FAST - no re-encoding by default)."""
     user_id = update.effective_user.id
@@ -130,6 +160,7 @@ async def execute_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE
     status_msg = None
     concat_file = None
     output_file = None
+    thumbnail_file = None
     
     try:
         start_time = time.time()
@@ -279,6 +310,8 @@ async def execute_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
         
+        thumbnail_file = await _generate_video_thumbnail(output_file)
+        
         try:
             await status_msg.edit_text(
                 text="🔀 MERGING VIDEOS\n━━━━━━━━━━━━━━━━━━\n\n"
@@ -296,7 +329,7 @@ async def execute_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE
             upload_as_document = upload_mode.get("format") == "document"
             await _upload_to_telegram(
                 context, user_id, output_file, file_size_mb, 
-                queue, start_time, status_msg, upload_as_document, merged_filename
+                queue, start_time, status_msg, upload_as_document, merged_filename, thumbnail_file
             )
         elif upload_engine == "rclone":
             await _upload_to_rclone(
@@ -318,6 +351,8 @@ async def execute_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE
                 os.remove(output_file)
             if concat_file and os.path.exists(concat_file):
                 os.remove(concat_file)
+            if thumbnail_file and os.path.exists(thumbnail_file):
+                os.remove(thumbnail_file)
         except:
             pass
     
@@ -342,6 +377,8 @@ async def execute_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE
                 os.remove(concat_file)
             if output_file and os.path.exists(output_file):
                 os.remove(output_file)
+            if thumbnail_file and os.path.exists(thumbnail_file):
+                os.remove(thumbnail_file)
         except:
             pass
     
@@ -349,8 +386,11 @@ async def execute_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE
         queue.is_merging = False
 
 
-async def _upload_to_telegram(context, user_id, filepath, file_size_mb, queue, start_time, status_msg, upload_as_document, filename):
-    """Upload file to Telegram using selected format (video or document)."""
+async def _upload_to_telegram(context, user_id, filepath, file_size_mb, queue, start_time, status_msg, upload_as_document, filename, thumbnail_file=None):
+    """
+    Upload file to Telegram with thumbnail support.
+    For video format, include the generated thumbnail.
+    """
     try:
         with open(filepath, 'rb') as f:
             if upload_as_document:
@@ -364,15 +404,34 @@ async def _upload_to_telegram(context, user_id, filepath, file_size_mb, queue, s
                             f"⏲️ Processing time: {int(time.time() - start_time)}s"
                 )
             else:
-                await context.bot.send_video(
-                    chat_id=user_id,
-                    video=f,
-                    caption=f"✅ MERGE COMPLETE!\n━━━━━━━━━━━━━━━━━━\n\n"
-                            f"📹 {filename}\n"
-                            f"📊 Size: {file_size_mb:.2f}MB\n"
-                            f"⏱️ Duration: {queue._format_duration(queue.get_total_duration())}\n\n"
-                            f"⏲️ Processing time: {int(time.time() - start_time)}s"
-                )
+                thumb = None
+                if thumbnail_file and os.path.exists(thumbnail_file):
+                    try:
+                        thumb = open(thumbnail_file, 'rb')
+                        await context.bot.send_video(
+                            chat_id=user_id,
+                            video=f,
+                            thumbnail=thumb,
+                            caption=f"✅ MERGE COMPLETE!\n━━━━━━━━━━━━━━━━━━\n\n"
+                                    f"📹 {filename}\n"
+                                    f"📊 Size: {file_size_mb:.2f}MB\n"
+                                    f"⏱️ Duration: {queue._format_duration(queue.get_total_duration())}\n\n"
+                                    f"⏲️ Processing time: {int(time.time() - start_time)}s"
+                        )
+                    finally:
+                        if thumb:
+                            thumb.close()
+                else:
+                    # Fallback: upload without thumbnail
+                    await context.bot.send_video(
+                        chat_id=user_id,
+                        video=f,
+                        caption=f"✅ MERGE COMPLETE!\n━━━━━━━━━━━━━━━━━━\n\n"
+                                f"📹 {filename}\n"
+                                f"📊 Size: {file_size_mb:.2f}MB\n"
+                                f"⏱️ Duration: {queue._format_duration(queue.get_total_duration())}\n\n"
+                                f"⏲️ Processing time: {int(time.time() - start_time)}s"
+                    )
         
         await status_msg.delete()
     except Exception as e:

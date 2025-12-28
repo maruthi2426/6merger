@@ -31,6 +31,20 @@ async def handle_merge_video_upload(update: Update, context: ContextTypes.DEFAUL
             file_path=file_path
         )
         
+        for existing_video in queue.videos:
+            if existing_video.file_name.lower() == file_name.lower():
+                await update.message.reply_text(
+                    "⚠️ DUPLICATE FILE NAME DETECTED!\n\n"
+                    f"❌ A file with name '{file_name}' is already in the queue.\n\n"
+                    "📝 Solution:\n"
+                    "• Rename the file before uploading\n"
+                    "• Or send a different file\n\n"
+                    f"📂 Current queue: {len(queue.videos)} videos"
+                )
+                file_manager.delete_file(file_path)
+                logger.warning(f"User {user_id} tried to add duplicate filename: {file_name}")
+                return
+        
         # Validate video
         if metadata.duration == 0:
             await update.message.reply_text(
@@ -51,14 +65,16 @@ async def handle_merge_video_upload(update: Update, context: ContextTypes.DEFAUL
             return
         
         for existing_video in queue.videos:
-            if existing_video.file_path == file_path:
+            if existing_video.file_id == metadata.file_id:
                 await update.message.reply_text(
-                    "⚠️ This video is already in the queue!\n\n"
-                    "Duplicates are not allowed.\n"
-                    f"Current queue: {len(queue.videos)} videos"
+                    "⚠️ DUPLICATE VIDEO DETECTED!\n\n"
+                    f"❌ This exact video is already in the queue.\n\n"
+                    "📝 Solution:\n"
+                    "• Please send a different video file\n\n"
+                    f"📂 Current queue: {len(queue.videos)} videos"
                 )
                 file_manager.delete_file(file_path)
-                logger.warning(f"User {user_id} tried to add duplicate: {file_name}")
+                logger.warning(f"User {user_id} tried to add duplicate file: {file_name}")
                 return
         
         # Add to queue
